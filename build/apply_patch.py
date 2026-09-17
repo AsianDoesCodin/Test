@@ -22,6 +22,14 @@ tools_dest = root / "src" / "UI" / "ProjectTools" / "ProjectTools.gd"
 tools_dest.parent.mkdir(parents=True, exist_ok=True)
 shutil.copy2(workspace / "patch" / "ProjectTools.gd", tools_dest)
 
+# Upstream pins an SSH.NET version that is now covered by 2026 security advisories.
+# 2026.0.0 contains the relevant fixes and retains the SftpClient API used here.
+csproj = root / "Yellow-s Dialog Editor.csproj"
+csproj_text = csproj.read_text(encoding="utf-8")
+csproj_text = csproj_text.replace('PackageReference Include="SSH.NET" Version="2024.2.0"',
+                                  'PackageReference Include="SSH.NET" Version="2026.0.0"')
+csproj.write_text(csproj_text, encoding="utf-8")
+
 # The MCP bridge is built as its own .NET 8 sidecar. Do not copy its C# source
 # beneath the Godot project: the upstream SDK-style csproj globs **/*.cs.
 main_path = root / "src" / "UI" / "Editor" / "MainEditor.gd"
@@ -91,6 +99,7 @@ This package is based on Yellow768/Yellows-Dialog-Editor v10.5 and keeps the ori
 - AI Graph Context tab that exposes saved YDEC node positions and reply connections.
 - Companion `YdeMcpBridge` stdio MCP server for dialogs + quests.
 - Project validation for dangling dialog/quest references and highest-index drift.
+- SSH.NET bumped to 2026.0.0 to avoid the security advisories affecting the upstream pinned dependency.
 
 ## MCP safety
 
