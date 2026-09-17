@@ -60,17 +60,20 @@ jobs:
           if (-not $godotExe) { throw 'Godot Mono executable was not found after extraction.' }
           "GODOT_EXE=$($godotExe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Restore Godot C# project
+      - name: Build Godot C# project
         shell: pwsh
         working-directory: yde
         run: |
           dotnet restore 'Yellow-s Dialog Editor.csproj'
+          dotnet build 'Yellow-s Dialog Editor.csproj' -c Debug --no-restore
 
-      - name: Import project resources
+      - name: Import project resources and build script cache
         shell: pwsh
         working-directory: yde
         run: |
-          & $env:GODOT_EXE --headless --editor --path . --quit
+          & $env:GODOT_EXE --headless --path . --import
+          if ($LASTEXITCODE -ne 0) { throw "Godot import failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path '.godot')) { throw 'Godot did not create the project import cache.' }
 
       - name: Export Windows application
         shell: pwsh
