@@ -71,9 +71,11 @@ jobs:
         shell: pwsh
         working-directory: yde
         run: |
-          # Godot 4.1.4 loads this upstream project's autoloads before its first
-          # global class scan. Bootstrap exactly once without autoload entries,
-          # then restore the real project file before validation/export.
+          # Godot 4.1.4 can try to parse globally named types before it has written
+          # the first global_script_class_cache.cfg on a clean CI checkout. Seed the
+          # deterministic cache from class_name declarations, then let Godot import
+          # resources normally and replace/normalize its cache.
+          python ../build/generate_godot_class_cache.py .
           Copy-Item project.godot project.godot.ci-backup -Force
           try {
             $project = Get-Content project.godot -Raw
@@ -82,11 +84,8 @@ jobs:
             & $env:GODOT_EXE --headless --path . --import
             $bootstrapCode = $LASTEXITCODE
             Write-Host "Bootstrap import exit code: $bootstrapCode"
-            if (-not (Test-Path '.godot')) { throw 'Godot bootstrap did not create .godot.' }
-            if (Test-Path '.godot\global_script_class_cache.cfg') {
-              Write-Host 'Global script class cache created.'
-            } else {
-              throw 'Godot bootstrap did not create global_script_class_cache.cfg.'
+            if (-not (Test-Path '.godot\global_script_class_cache.cfg')) {
+              throw 'Godot bootstrap did not retain global_script_class_cache.cfg.'
             }
           }
           finally {
@@ -101,7 +100,6 @@ jobs:
           & $env:GODOT_EXE --headless --path . --import
           $importCode = $LASTEXITCODE
           if ($importCode -ne 0) { throw "Godot import failed with exit code $importCode" }
-          # Parse the extension scripts explicitly; these exit non-zero on syntax errors.
           & $env:GODOT_EXE --headless --path . --check-only --script 'res://src/Classes/File System/QuestDocument.gd'
           if ($LASTEXITCODE -ne 0) { throw 'QuestDocument.gd failed parse validation.' }
           & $env:GODOT_EXE --headless --path . --check-only --script 'res://src/UI/ProjectTools/ProjectTools.gd'
