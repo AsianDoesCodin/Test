@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: yde-arvan-ai-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -76,19 +80,13 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # Upstream commits generated *.import remaps, but not their .godot/imported
-          # outputs. Delete only generated remaps so Godot is forced to rebuild them.
           $staleImports = @(Get-ChildItem . -Recurse -Filter '*.import' -File)
           $expectedImportMetadata = $staleImports.Count
           Write-Host "Removing $expectedImportMetadata stale generated .import files."
           $staleImports | Remove-Item -Force
 
-          # Seed class_name registrations to avoid the Godot 4.1 first-scan ordering bug.
           python ../build/generate_godot_class_cache.py .
 
-          # Godot 4.1.x can hang on a pristine headless --import even after importing.
-          # Launch the editor scan, observe the imported-resource directory until it
-          # stops changing, then terminate only this CI bootstrap process.
           Copy-Item project.godot project.godot.ci-backup -Force
           try {
             $project = Get-Content project.godot -Raw
