@@ -67,28 +67,45 @@ jobs:
           dotnet restore 'Yellow-s Dialog Editor.csproj'
           dotnet build 'Yellow-s Dialog Editor.csproj' -c Debug --no-restore
 
-      - name: Prewarm Godot editor class and resource caches
+      - name: Bootstrap Godot class/resource cache
         shell: pwsh
         working-directory: yde
-        continue-on-error: true
         run: |
-          # Upstream's fresh checkout has autoloads that reference class_name scripts.
-          # A real editor launch performs the first project scan before normal use.
-          & $env:GODOT_EXE --headless --editor --path . --quit-after 240
-          Write-Host "Prewarm exit code: $LASTEXITCODE"
-          if (Test-Path '.godot') {
-            Write-Host '.godot cache created.'
-            Get-ChildItem '.godot' -Force | Select-Object Name,Length
+          # Godot 4.1.4 loads this upstream project's autoloads before its first
+          # global class scan. Bootstrap exactly once without autoload entries,
+          # then restore the real project file before validation/export.
+          Copy-Item project.godot project.godot.ci-backup -Force
+          try {
+            $project = Get-Content project.godot -Raw
+            $project = [regex]::Replace($project, '(?ms)^\[autoload\]\s*.*?(?=^\[)', "[autoload]`r`n`r`n")
+            Set-Content project.godot $project -Encoding UTF8
+            & $env:GODOT_EXE --headless --path . --import
+            $bootstrapCode = $LASTEXITCODE
+            Write-Host "Bootstrap import exit code: $bootstrapCode"
+            if (-not (Test-Path '.godot')) { throw 'Godot bootstrap did not create .godot.' }
+            if (Test-Path '.godot\global_script_class_cache.cfg') {
+              Write-Host 'Global script class cache created.'
+            } else {
+              throw 'Godot bootstrap did not create global_script_class_cache.cfg.'
+            }
+          }
+          finally {
+            Copy-Item project.godot.ci-backup project.godot -Force
+            Remove-Item project.godot.ci-backup -Force
           }
 
-      - name: Import project resources and build script cache
+      - name: Import and validate real project
         shell: pwsh
         working-directory: yde
         run: |
           & $env:GODOT_EXE --headless --path . --import
           $importCode = $LASTEXITCODE
-          if (-not (Test-Path '.godot')) { throw 'Godot did not create the project import cache.' }
           if ($importCode -ne 0) { throw "Godot import failed with exit code $importCode" }
+          # Parse the extension scripts explicitly; these exit non-zero on syntax errors.
+          & $env:GODOT_EXE --headless --path . --check-only --script 'res://src/Classes/File System/QuestDocument.gd'
+          if ($LASTEXITCODE -ne 0) { throw 'QuestDocument.gd failed parse validation.' }
+          & $env:GODOT_EXE --headless --path . --check-only --script 'res://src/UI/ProjectTools/ProjectTools.gd'
+          if ($LASTEXITCODE -ne 0) { throw 'ProjectTools.gd failed parse validation.' }
 
       - name: Export Windows application
         shell: pwsh
@@ -121,7 +138,10 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist/package | Out-Null
           Compress-Archive -Path dist/app/* -DestinationPath dist/package/YDE-ArvanAI-Portable.zip -CompressionLevel Optimal
-          Compress-Archive -Path yde/* -DestinationPath dist/package/YDE-ArvanAI-Source.zip -CompressionLevel Optimal
+          New-Item -ItemType Directory -Force dist/source | Out-Null
+          Copy-Item yde dist/source/editor -Recurse
+          Copy-Item mcp dist/source/mcp -Recurse
+          Compress-Archive -Path dist/source/* -DestinationPath dist/package/YDE-ArvanAI-Source.zip -CompressionLevel Optimal
 
       - name: Install Inno Setup
         shell: pwsh
