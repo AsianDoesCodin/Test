@@ -1,0 +1,142 @@
+name: Build YDE Arvan AI
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout build workspace
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up .NET 6 and 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            8.0.x
+
+      - name: Clone Yellow's Dialog Editor v10.5 source
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch master https://github.com/Yellow768/Yellows-Dialog-Editor.git yde
+          python build/apply_patch.py yde
+          if (Test-Path yde/.git) { Remove-Item yde/.git -Recurse -Force }
+
+      - name: Build MCP bridge
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/app/mcp | Out-Null
+          dotnet publish mcp/YdeMcpBridge.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=None -o dist/app/mcp
+
+      - name: Download Godot 4.1.4 Mono and export templates
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $godotUrl = 'https://github.com/godotengine/godot/releases/download/4.1.4-stable/Godot_v4.1.4-stable_mono_win64.zip'
+          $templateUrl = 'https://github.com/godotengine/godot/releases/download/4.1.4-stable/Godot_v4.1.4-stable_mono_export_templates.tpz'
+          Invoke-WebRequest $godotUrl -OutFile godot.zip
+          Expand-Archive godot.zip -DestinationPath godot -Force
+          Invoke-WebRequest $templateUrl -OutFile templates.tpz
+          Copy-Item templates.tpz templates.zip
+          Expand-Archive templates.zip -DestinationPath templates_unpacked -Force
+          $templateDir = Join-Path $env:APPDATA 'Godot\export_templates\4.1.4.stable.mono'
+          New-Item -ItemType Directory -Force $templateDir | Out-Null
+          Copy-Item 'templates_unpacked\templates\*' $templateDir -Recurse -Force
+          $godotExe = Get-ChildItem godot -Recurse -Filter 'Godot_v4.1.4-stable_mono_win64.exe' | Select-Object -First 1
+          if (-not $godotExe) { throw 'Godot Mono executable was not found after extraction.' }
+          "GODOT_EXE=$($godotExe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Restore Godot C# project
+        shell: pwsh
+        working-directory: yde
+        run: |
+          dotnet restore 'Yellow-s Dialog Editor.csproj'
+
+      - name: Import project resources
+        shell: pwsh
+        working-directory: yde
+        run: |
+          & $env:GODOT_EXE --headless --editor --path . --quit
+
+      - name: Export Windows application
+        shell: pwsh
+        working-directory: yde
+        run: |
+          $target = Join-Path $env:GITHUB_WORKSPACE 'dist\app\YellowsDialogEditor-ArvanAI.exe'
+          & $env:GODOT_EXE --headless --path . --export-release 'Windows Desktop' $target
+          if ($LASTEXITCODE -ne 0) { throw "Godot export failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path $target)) { throw 'Godot did not produce the expected Windows executable.' }
+
+      - name: Add package documentation
+        shell: pwsh
+        run: |
+          Copy-Item docs/MCP_SETUP.md dist/app/MCP_SETUP.md
+          Copy-Item yde/ARVAN_AI_README.md dist/app/README_ARVAN_AI.md
+          Copy-Item yde/LICENSE.txt dist/app/LICENSE.txt
+          @'
+          {
+            "mcpServers": {
+              "yde-arvan": {
+                "command": "<INSTALL_DIR>\\mcp\\YdeMcpBridge.exe",
+                "args": ["--project", "<CUSTOMNPCS_FOLDER>"]
+              }
+            }
+          }
+          '@ | Set-Content dist/app/mcp-config.example.json -Encoding UTF8
+
+      - name: Create portable and source archives
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/package | Out-Null
+          Compress-Archive -Path dist/app/* -DestinationPath dist/package/YDE-ArvanAI-Portable.zip -CompressionLevel Optimal
+          Compress-Archive -Path yde/* -DestinationPath dist/package/YDE-ArvanAI-Source.zip -CompressionLevel Optimal
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist/installer | Out-Null
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { $iscc = 'C:\Program Files\Inno Setup 6\ISCC.exe' }
+          if (-not (Test-Path $iscc)) { throw 'ISCC.exe not found.' }
+          & $iscc "/DSourceDir=$env:GITHUB_WORKSPACE\dist\app" "/DOutputDir=$env:GITHUB_WORKSPACE\dist\installer" installer/YDE-ArvanAI.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          Copy-Item dist/installer/YDE-ArvanAI-Setup.exe dist/package/YDE-ArvanAI-Setup.exe
+
+      - name: Add checksums and release notes
+        shell: pwsh
+        run: |
+          Copy-Item docs/MCP_SETUP.md dist/package/MCP_SETUP.md
+          Copy-Item yde/ARVAN_AI_README.md dist/package/README.md
+          $files = Get-ChildItem dist/package -File
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($file.Name)"
+          }
+          $lines | Set-Content dist/package/SHA256SUMS.txt -Encoding ASCII
+
+      - name: Upload distributable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: YDE-ArvanAI-v0.1.0-Windows
+          path: dist/package/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
