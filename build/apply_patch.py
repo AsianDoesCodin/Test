@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -22,12 +23,18 @@ tools_dest = root / "src" / "UI" / "ProjectTools" / "ProjectTools.gd"
 tools_dest.parent.mkdir(parents=True, exist_ok=True)
 shutil.copy2(workspace / "patch" / "ProjectTools.gd", tools_dest)
 
-# Upstream pins an SSH.NET version that is now covered by 2026 security advisories.
-# 2026.0.0 contains the relevant fixes and retains the SftpClient API used here.
+# Upstream pins an SSH.NET version affected by 2026 security advisories.
+# 2026.0.0 is the first fixed version and still exposes the SftpClient API used here.
 csproj = root / "Yellow-s Dialog Editor.csproj"
 csproj_text = csproj.read_text(encoding="utf-8")
-csproj_text = csproj_text.replace('PackageReference Include="SSH.NET" Version="2024.2.0"',
-                                  'PackageReference Include="SSH.NET" Version="2026.0.0"')
+csproj_text, changed = re.subn(
+    r'(<PackageReference\s+Include="SSH\.NET"\s+Version=")([^"]+)("\s*/>)',
+    r'\g<1>2026.0.0\g<3>',
+    csproj_text,
+    count=1,
+)
+if changed != 1 or 'Include="SSH.NET" Version="2026.0.0"' not in csproj_text:
+    raise RuntimeError("Could not update the upstream SSH.NET PackageReference to 2026.0.0")
 csproj.write_text(csproj_text, encoding="utf-8")
 
 # The MCP bridge is built as its own .NET 8 sidecar. Do not copy its C# source
