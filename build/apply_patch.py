@@ -22,12 +22,8 @@ tools_dest = root / "src" / "UI" / "ProjectTools" / "ProjectTools.gd"
 tools_dest.parent.mkdir(parents=True, exist_ok=True)
 shutil.copy2(workspace / "patch" / "ProjectTools.gd", tools_dest)
 
-# Keep MCP source with the patched source distribution.
-mcp_dest = root / "tools" / "YdeMcpBridge"
-if mcp_dest.exists():
-    shutil.rmtree(mcp_dest)
-shutil.copytree(workspace / "mcp", mcp_dest)
-
+# The MCP bridge is built as its own .NET 8 sidecar. Do not copy its C# source
+# beneath the Godot project: the upstream SDK-style csproj globs **/*.cs.
 main_path = root / "src" / "UI" / "Editor" / "MainEditor.gd"
 main = main_path.read_text(encoding="utf-8")
 needle = '\t$DialogEditor.use_snap = GlobalDeclarations.snap_enabled\n'
@@ -58,7 +54,6 @@ func _open_project_tools():
 	var existing = get_node_or_null("ProjectTools")
 	if existing:
 		existing.show()
-		existing.grab_focus()
 		return
 	var tools_script = load("res://src/UI/ProjectTools/ProjectTools.gd")
 	var window = tools_script.new()
@@ -70,14 +65,14 @@ if "func _open_project_tools():" not in main:
     main += append
 main_path.write_text(main, encoding="utf-8")
 
-# Brand the build without replacing the upstream attribution/links.
+# Brand the build without replacing upstream attribution/links.
 landing = root / "src" / "UI" / "LandingScreen.tscn"
 text = landing.read_text(encoding="utf-8")
 text = text.replace('text = "[b]v10.5"', 'text = "[b]v10.5 + Arvan AI"')
 text = text.replace('text = "2025-07-19"', 'text = "2026-09-17"')
 landing.write_text(text, encoding="utf-8")
 
-# Give the exported binary a stable fork name and include scripts for easier diagnostics.
+# Include scripts in export for easier diagnostics.
 presets = root / "export_presets.cfg"
 preset_text = presets.read_text(encoding="utf-8")
 preset_text = preset_text.replace('dotnet/include_scripts_content=false', 'dotnet/include_scripts_content=true')
