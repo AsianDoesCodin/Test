@@ -74,56 +74,106 @@ jobs:
         shell: pwsh
         working-directory: yde
         run: |
-          # Upstream commits generated *.import remaps, but not the .godot/imported
-          # files they point to. Remove those generated remaps so a clean CI checkout
-          # performs a real first import instead of trusting stale missing outputs.
-          $staleImports = Get-ChildItem . -Recurse -Filter '*.import' -File
-          Write-Host "Removing $($staleImports.Count) stale generated .import files."
+          $ErrorActionPreference = 'Stop'
+
+          # Upstream commits generated *.import remaps, but not their .godot/imported
+          # outputs. Delete only generated remaps so Godot is forced to rebuild them.
+          $staleImports = @(Get-ChildItem . -Recurse -Filter '*.import' -File)
+          $expectedImportMetadata = $staleImports.Count
+          Write-Host "Removing $expectedImportMetadata stale generated .import files."
           $staleImports | Remove-Item -Force
 
-          # Seed global class_name registrations because Godot 4.1.4 may parse an
-          # autoload before it has generated the class cache on a pristine checkout.
+          # Seed class_name registrations to avoid the Godot 4.1 first-scan ordering bug.
           python ../build/generate_godot_class_cache.py .
 
-          # Bootstrap once with autoloads disabled. This modifies only the CI copy;
-          # project.godot is restored before validation/export.
+          # Godot 4.1.x can hang on a pristine headless --import even after importing.
+          # Launch the editor scan, observe the imported-resource directory until it
+          # stops changing, then terminate only this CI bootstrap process.
           Copy-Item project.godot project.godot.ci-backup -Force
           try {
             $project = Get-Content project.godot -Raw
             $project = [regex]::Replace($project, '(?ms)^\[autoload\]\s*.*?(?=^\[)', "[autoload]`r`n`r`n")
             Set-Content project.godot $project -Encoding UTF8
-            $bootstrap = Start-Process -FilePath $env:GODOT_EXE -ArgumentList @('--headless','--path','.','--import') -NoNewWindow -Wait -PassThru
-            Write-Host "Bootstrap import exit code: $($bootstrap.ExitCode)"
-            if ($bootstrap.ExitCode -ne 0) { throw "Godot bootstrap import failed with exit code $($bootstrap.ExitCode)" }
-            if (-not (Test-Path '.godot\global_script_class_cache.cfg')) { throw 'Godot bootstrap did not retain global_script_class_cache.cfg.' }
+
+            $bootstrap = Start-Process -FilePath $env:GODOT_EXE -ArgumentList @('--headless','--editor','--path','.') -NoNewWindow -PassThru
+            $lastCount = -1
+            $stableChecks = 0
+            $scanComplete = $false
+
+            for ($i = 0; $i -lt 180; $i++) {
+              Start-Sleep -Seconds 1
+              $count = @(Get-ChildItem '.godot\imported' -File -ErrorAction SilentlyContinue).Count
+              if ($count -gt 10 -and $count -eq $lastCount) {
+                $stableChecks++
+              } else {
+                $stableChecks = 0
+              }
+              $lastCount = $count
+
+              if (($i % 10) -eq 0) { Write-Host "Imported resources observed: $count" }
+              if ($stableChecks -ge 8) {
+                $scanComplete = $true
+                break
+              }
+              if ($bootstrap.HasExited) { break }
+            }
+
+            if (-not $bootstrap.HasExited) {
+              Stop-Process -Id $bootstrap.Id -Force
+              $bootstrap.WaitForExit()
+            }
+
             $importedCount = @(Get-ChildItem '.godot\imported' -File -ErrorAction SilentlyContinue).Count
-            Write-Host "Imported resource files: $importedCount"
+            $regeneratedMetadata = @(Get-ChildItem . -Recurse -Filter '*.import' -File).Count
+            Write-Host "Final imported resources: $importedCount"
+            Write-Host "Regenerated .import metadata: $regeneratedMetadata / $expectedImportMetadata"
+
+            if (-not $scanComplete) { throw 'Godot editor scan did not reach a stable imported-resource state.' }
+            if (-not (Test-Path '.godot\global_script_class_cache.cfg')) { throw 'Missing global_script_class_cache.cfg after bootstrap.' }
             if ($importedCount -lt 10) { throw 'Godot bootstrap did not produce expected imported resources.' }
+            if ($expectedImportMetadata -gt 0 -and $regeneratedMetadata -lt [Math]::Floor($expectedImportMetadata * 0.85)) {
+              throw 'Godot regenerated too few .import metadata files.'
+            }
           }
           finally {
             Copy-Item project.godot.ci-backup project.godot -Force
             Remove-Item project.godot.ci-backup -Force
           }
 
-      - name: Import and validate real project
+      - name: Validate extension scripts
         shell: pwsh
         working-directory: yde
         run: |
-          $import = Start-Process -FilePath $env:GODOT_EXE -ArgumentList @('--headless','--path','.','--import') -NoNewWindow -Wait -PassThru
-          if ($import.ExitCode -ne 0) { throw "Godot import failed with exit code $($import.ExitCode)" }
+          function Invoke-GodotChecked([string[]]$GodotArgs, [string]$Label, [int]$TimeoutMs = 120000) {
+            $psi = [System.Diagnostics.ProcessStartInfo]::new()
+            $psi.FileName = $env:GODOT_EXE
+            $psi.UseShellExecute = $false
+            foreach ($arg in $GodotArgs) { [void]$psi.ArgumentList.Add($arg) }
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            if (-not $proc.WaitForExit($TimeoutMs)) {
+              $proc.Kill($true)
+              throw "$Label timed out."
+            }
+            if ($proc.ExitCode -ne 0) { throw "$Label failed with exit code $($proc.ExitCode)." }
+          }
 
-          $questCheck = Start-Process -FilePath $env:GODOT_EXE -ArgumentList @('--headless','--path','.','--check-only','--script','"res://src/Classes/File System/QuestDocument.gd"') -NoNewWindow -Wait -PassThru
-          if ($questCheck.ExitCode -ne 0) { throw 'QuestDocument.gd failed parse validation.' }
-
-          $toolsCheck = Start-Process -FilePath $env:GODOT_EXE -ArgumentList @('--headless','--path','.','--check-only','--script','res://src/UI/ProjectTools/ProjectTools.gd') -NoNewWindow -Wait -PassThru
-          if ($toolsCheck.ExitCode -ne 0) { throw 'ProjectTools.gd failed parse validation.' }
+          Invoke-GodotChecked @('--headless','--path','.','--check-only','--script','res://src/Classes/File System/QuestDocument.gd') 'QuestDocument.gd parse validation'
+          Invoke-GodotChecked @('--headless','--path','.','--check-only','--script','res://src/UI/ProjectTools/ProjectTools.gd') 'ProjectTools.gd parse validation'
 
       - name: Export Windows application
         shell: pwsh
         working-directory: yde
         run: |
           $target = Join-Path $env:GITHUB_WORKSPACE 'dist\app\YellowsDialogEditor-ArvanAI.exe'
-          $export = Start-Process -FilePath $env:GODOT_EXE -ArgumentList @('--headless','--path','.','--export-release','"Windows Desktop"',('"' + $target + '"')) -NoNewWindow -Wait -PassThru
+          $psi = [System.Diagnostics.ProcessStartInfo]::new()
+          $psi.FileName = $env:GODOT_EXE
+          $psi.UseShellExecute = $false
+          foreach ($arg in @('--headless','--path','.','--export-release','Windows Desktop',$target)) { [void]$psi.ArgumentList.Add($arg) }
+          $export = [System.Diagnostics.Process]::Start($psi)
+          if (-not $export.WaitForExit(300000)) {
+            $export.Kill($true)
+            throw 'Godot export timed out.'
+          }
           if ($export.ExitCode -ne 0) { throw "Godot export failed with exit code $($export.ExitCode)" }
           if (-not (Test-Path $target)) { throw 'Godot did not produce the expected Windows executable.' }
 
