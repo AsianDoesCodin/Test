@@ -142,21 +142,46 @@ jobs:
         shell: pwsh
         working-directory: yde
         run: |
-          function Invoke-GodotChecked([string[]]$GodotArgs, [string]$Label, [int]$TimeoutMs = 120000) {
-            $psi = [System.Diagnostics.ProcessStartInfo]::new()
-            $psi.FileName = $env:GODOT_EXE
-            $psi.UseShellExecute = $false
-            foreach ($arg in $GodotArgs) { [void]$psi.ArgumentList.Add($arg) }
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            if (-not $proc.WaitForExit($TimeoutMs)) {
-              $proc.Kill($true)
-              throw "$Label timed out."
-            }
-            if ($proc.ExitCode -ne 0) { throw "$Label failed with exit code $($proc.ExitCode)." }
-          }
+          $ErrorActionPreference = 'Stop'
 
-          Invoke-GodotChecked @('--headless','--path','.','--check-only','--script','res://src/Classes/File System/QuestDocument.gd') 'QuestDocument.gd parse validation'
-          Invoke-GodotChecked @('--headless','--path','.','--check-only','--script','res://src/UI/ProjectTools/ProjectTools.gd') 'ProjectTools.gd parse validation'
+          # QuestDocument has no autoload dependencies, so standalone parsing is valid.
+          $questPsi = [System.Diagnostics.ProcessStartInfo]::new()
+          $questPsi.FileName = $env:GODOT_EXE
+          $questPsi.UseShellExecute = $false
+          foreach ($arg in @('--headless','--path','.','--check-only','--script','res://src/Classes/File System/QuestDocument.gd')) { [void]$questPsi.ArgumentList.Add($arg) }
+          $questCheck = [System.Diagnostics.Process]::Start($questPsi)
+          if (-not $questCheck.WaitForExit(120000)) {
+            $questCheck.Kill($true)
+            throw 'QuestDocument.gd parse validation timed out.'
+          }
+          if ($questCheck.ExitCode -ne 0) { throw "QuestDocument.gd parse validation failed with exit code $($questCheck.ExitCode)." }
+
+          # ProjectTools intentionally uses CurrentEnvironment, an autoload singleton.
+          # Validate it in the real project context rather than standalone --script,
+          # which does not register project autoload names.
+          $smokePsi = [System.Diagnostics.ProcessStartInfo]::new()
+          $smokePsi.FileName = $env:GODOT_EXE
+          $smokePsi.UseShellExecute = $false
+          $smokePsi.RedirectStandardOutput = $true
+          $smokePsi.RedirectStandardError = $true
+          foreach ($arg in @('--headless','--path','.','--quit-after','120')) { [void]$smokePsi.ArgumentList.Add($arg) }
+          $smoke = [System.Diagnostics.Process]::Start($smokePsi)
+          $stdoutTask = $smoke.StandardOutput.ReadToEndAsync()
+          $stderrTask = $smoke.StandardError.ReadToEndAsync()
+          if (-not $smoke.WaitForExit(120000)) {
+            $smoke.Kill($true)
+            throw 'Project-context Godot smoke validation timed out.'
+          }
+          $output = $stdoutTask.Result + "`n" + $stderrTask.Result
+          $output | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'godot-project-smoke.log') -Encoding UTF8
+          Write-Host $output
+
+          $extensionError = $false
+          if ($output -match '(?s)(SCRIPT ERROR|Parse Error|Compile Error).{0,1200}res://src/UI/ProjectTools/ProjectTools\.gd') { $extensionError = $true }
+          if ($output -match '(?s)(SCRIPT ERROR|Parse Error|Compile Error).{0,1200}res://src/UI/Editor/MainEditor\.gd') { $extensionError = $true }
+          if ($output -match '(?s)res://src/UI/ProjectTools/ProjectTools\.gd.{0,1200}(Parse Error|Compile Error)') { $extensionError = $true }
+          if ($output -match '(?s)res://src/UI/Editor/MainEditor\.gd.{0,1200}(Parse Error|Compile Error)') { $extensionError = $true }
+          if ($extensionError) { throw 'Project-context smoke test found a compile/parse error in the Arvan editor extension.' }
 
       - name: Export Windows application
         shell: pwsh
