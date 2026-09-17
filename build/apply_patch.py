@@ -23,6 +23,19 @@ tools_dest = root / "src" / "UI" / "ProjectTools" / "ProjectTools.gd"
 tools_dest.parent.mkdir(parents=True, exist_ok=True)
 shutil.copy2(workspace / "patch" / "ProjectTools.gd", tools_dest)
 
+# Godot 4.1 cannot infer these expressions because they depend on autoload values.
+# Keep explicit String annotations in the patched copy so --check-only is deterministic.
+tools_text = tools_dest.read_text(encoding="utf-8")
+tools_text = tools_text.replace(
+    'var ydec_path := CurrentEnvironment.current_directory + "/dialogs/" + category + "/" + category + ".ydec"',
+    'var ydec_path: String = CurrentEnvironment.current_directory + "/dialogs/" + category + "/" + category + ".ydec"',
+)
+tools_text = tools_text.replace(
+    'var out := "CATEGORY: " + category + "\\nYDEC: " + ydec_path + "\\n\\n"',
+    'var out: String = "CATEGORY: " + category + "\\nYDEC: " + ydec_path + "\\n\\n"',
+)
+tools_dest.write_text(tools_text, encoding="utf-8")
+
 # Upstream pins an SSH.NET version affected by 2026 security advisories.
 # 2026.0.0 is the first fixed version and still exposes the SftpClient API used here.
 csproj = root / "Yellow-s Dialog Editor.csproj"
