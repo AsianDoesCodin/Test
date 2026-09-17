@@ -67,13 +67,28 @@ jobs:
           dotnet restore 'Yellow-s Dialog Editor.csproj'
           dotnet build 'Yellow-s Dialog Editor.csproj' -c Debug --no-restore
 
+      - name: Prewarm Godot editor class and resource caches
+        shell: pwsh
+        working-directory: yde
+        continue-on-error: true
+        run: |
+          # Upstream's fresh checkout has autoloads that reference class_name scripts.
+          # A real editor launch performs the first project scan before normal use.
+          & $env:GODOT_EXE --headless --editor --path . --quit-after 240
+          Write-Host "Prewarm exit code: $LASTEXITCODE"
+          if (Test-Path '.godot') {
+            Write-Host '.godot cache created.'
+            Get-ChildItem '.godot' -Force | Select-Object Name,Length
+          }
+
       - name: Import project resources and build script cache
         shell: pwsh
         working-directory: yde
         run: |
           & $env:GODOT_EXE --headless --path . --import
-          if ($LASTEXITCODE -ne 0) { throw "Godot import failed with exit code $LASTEXITCODE" }
+          $importCode = $LASTEXITCODE
           if (-not (Test-Path '.godot')) { throw 'Godot did not create the project import cache.' }
+          if ($importCode -ne 0) { throw "Godot import failed with exit code $importCode" }
 
       - name: Export Windows application
         shell: pwsh
