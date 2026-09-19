@@ -1,0 +1,176 @@
+name: Package ChatGPT Handoff
+
+on:
+  push:
+    branches:
+      - chatgpt-handoff-20260920
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build touched-files handoff
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = Join-Path $env:GITHUB_WORKSPACE 'handoff'
+          New-Item -ItemType Directory -Force $root | Out-Null
+
+          $files = @(
+            'patch/QuestDocument.gd',
+            'patch/ProjectTools.gd',
+            'mcp/Program.cs',
+            'mcp/YdeMcpBridge.csproj',
+            'build/apply_patch.py',
+            'build/generate_godot_class_cache.py',
+            'docs/MCP_SETUP.md',
+            'installer/YDE-ArvanAI.iss',
+            '.github/workflows/build-yde-arvan-ai.yml'
+          )
+
+          foreach ($relative in $files) {
+            if (-not (Test-Path $relative)) { throw "Missing expected handoff file: $relative" }
+            $dest = Join-Path $root $relative
+            New-Item -ItemType Directory -Force (Split-Path $dest -Parent) | Out-Null
+            Copy-Item $relative $dest -Force
+          }
+
+          @'
+          # YDE Arvan AI — ChatGPT handoff
+
+          This archive contains ONLY files introduced or modified by ChatGPT's YDE/Arvan-AI implementation.
+          It intentionally excludes the upstream Yellow's Dialog Editor source tree, compiled binaries, installers,
+          generated Godot caches, and unrelated repository files.
+
+          ## Last known-good baseline
+
+          Source snapshot commit:
+          96a70ef9b099f9431809bd7bb96957f9bf0843a6
+
+          The Windows CI for that snapshot completed successfully, including:
+          - MCP bridge compile
+          - patched Godot C# build
+          - clean Godot asset/class bootstrap
+          - extension validation in project context
+          - Windows export
+          - Inno Setup installer build
+          - distributable artifact upload
+
+          ## Product functionality added
+
+          ### Quest authoring
+          - Added a QUESTS / AI entry point to the main editor toolbar.
+          - Added a Quest Workbench with quest categories and quest lists.
+          - Added create/duplicate/edit support for the three quest shapes verified for the Arvan workflow:
+            - Item quest: Type 0
+            - Talk/Dialog quest: Type 1
+            - Kill quest: Type 2
+          - Added editable common fields including Title, Text, CompleteText, CompleterNpc,
+            NextQuestId, and RewardExp.
+          - Added an Advanced Native Record editor for fields not modeled by the UI.
+          - Basic field saves are intentionally lossless: native CustomNPCs typed values and unknown fields
+            are preserved rather than parsing/re-serializing the entire record.
+          - QuestDocument.gd is the native-record helper that performs in-place scalar edits.
+
+          ### AI visual/context support
+          - Added an AI Graph Context tab.
+          - Reads saved .ydec graph data when available.
+          - Exposes dialogue IDs, titles, text, X/Y layout positions, reply labels, and reply destinations.
+          - This is intended to give an AI the same logical/visual branch context a human sees in the editor.
+
+          ### MCP bridge
+          - Added a standalone .NET 8 stdio MCP sidecar: YdeMcpBridge.
+          - It is kept OUTSIDE the Godot source tree so the upstream SDK-style C# project does not glob it.
+          - Read-only by default.
+          - Writes require --allow-write or YDE_MCP_ALLOW_WRITE=1.
+          - Read tools include project/dialog/quest listing, individual reads, graph context, and validation.
+          - Write mode includes category creation and dialog/quest create/update/link operations.
+          - The MCP bridge is designed to inspect dialogs + quests together, including YDEC layout context.
+
+          ### Main-editor integration / upstream touch points
+          build/apply_patch.py applies these changes to a clean upstream checkout:
+          - adds src/Classes/File System/QuestDocument.gd
+          - adds src/UI/ProjectTools/ProjectTools.gd
+          - modifies src/UI/Editor/MainEditor.gd to add the QUESTS / AI toolbar button/window
+          - modifies src/UI/LandingScreen.tscn for the Arvan-AI build label
+          - modifies export_presets.cfg to include scripts for diagnostics
+          - modifies Yellow-s Dialog Editor.csproj to use SSH.NET 2026.0.0
+          - generates ARVAN_AI_README.md
+
+          PATCH_TOUCHPOINTS.diff in this archive shows the direct modifications to existing upstream files.
+
+          ### Build / packaging work
+          - Added deterministic Godot class-cache generation for clean CI checkouts.
+          - CI removes stale committed *.import metadata and rebuilds resources.
+          - CI uses a monitored first editor scan to avoid Godot 4.1.4 clean-import hangs.
+          - ProjectTools validation is done in real project context because it depends on autoload singletons.
+          - Added Windows export and Inno Setup installer definition.
+          - Added MCP setup documentation and read-only/write-enabled example configurations.
+          - Added workflow concurrency so superseded builds cancel automatically.
+
+          ## Important merge guidance for Codex
+
+          Do NOT replace newer Codex work wholesale with this snapshot.
+          Merge these features into the newer tree.
+
+          Preserve these behavioral requirements:
+          1. Quest native files must not be normalized through ordinary JSON serialization.
+          2. Unknown native quest fields and numeric suffixes such as 0b / 0L must survive basic edits.
+          3. AI context should include both graph routes and saved node positions when .ydec exists.
+          4. MCP must remain read-only by default; write access must be explicit.
+          5. Keep the MCP C# sidecar outside the Godot project source tree unless the Godot csproj explicitly excludes it.
+          6. Do not remove existing dialog-editor behavior while adding quest support.
+          7. Treat Talk/Kill/Item as the verified initial quest types; do not invent semantics for unknown types.
+          8. If Codex has already redesigned the UI/data layer, port the functionality rather than reverting that redesign.
+
+          ## Files in this handoff
+
+          patch/QuestDocument.gd
+          patch/ProjectTools.gd
+          mcp/Program.cs
+          mcp/YdeMcpBridge.csproj
+          build/apply_patch.py
+          build/generate_godot_class_cache.py
+          docs/MCP_SETUP.md
+          installer/YDE-ArvanAI.iss
+          .github/workflows/build-yde-arvan-ai.yml
+          ARVAN_AI_README.md
+          PATCH_TOUCHPOINTS.diff
+          .handoff.md
+
+          ## Not included
+
+          - upstream Yellow768/Yellows-Dialog-Editor files that we did not change
+          - compiled EXE/installer/portable build
+          - complete source export
+          - Godot .godot/imported cache
+          - user/project Minecraft data
+          '@ | Set-Content (Join-Path $root '.handoff.md') -Encoding UTF8
+
+          git clone --depth 1 --branch master https://github.com/Yellow768/Yellows-Dialog-Editor.git upstream
+          python build/apply_patch.py upstream
+          Copy-Item upstream/ARVAN_AI_README.md (Join-Path $root 'ARVAN_AI_README.md') -Force
+
+          & git -C upstream diff -- 'Yellow-s Dialog Editor.csproj' 'src/UI/Editor/MainEditor.gd' 'src/UI/LandingScreen.tscn' 'export_presets.cfg' | Out-File (Join-Path $root 'PATCH_TOUCHPOINTS.diff') -Encoding UTF8
+
+          $zip = Join-Path $env:GITHUB_WORKSPACE 'YDE-ArvanAI-ChatGPT-Handoff.zip'
+          Compress-Archive -Path (Join-Path $root '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+
+          Write-Host 'Handoff contents:'
+          Get-ChildItem $root -Recurse -Force | ForEach-Object {
+            Write-Host $_.FullName.Substring($root.Length + 1)
+          }
+
+      - name: Upload handoff ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: YDE-ArvanAI-ChatGPT-Handoff
+          path: YDE-ArvanAI-ChatGPT-Handoff.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
